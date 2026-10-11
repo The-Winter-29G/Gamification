@@ -1,0 +1,184 @@
+<!-- DROPPY DISPLAY HEADER: paste into Qualtrics Look & Feel > Header (HTML/source). -->
+<!-- CUSTOMIZE: the mascot graphic and CSS animations are defined in your survey HTML/CSS,
+     not in this JavaScript. See 04_reference/HTML_AND_IMAGES.md. -->
+<script>
+(function () {
+    "use strict";
+
+    const WELCOME_DURATION = 4000;          // CUSTOMIZE: welcome message duration (ms).
+    const POINTS_ANIMATION_DURATION = 6000; // CUSTOMIZE: +points animation duration (ms).
+
+    let welcomeActive = false;
+    let welcomeShownOnPage = false;
+    let pointsDisappearTimer = null;
+    let pointsHideTimer = null;
+
+    function arePointsVisible() {
+        return Qualtrics.SurveyEngine.getJSEmbeddedData("arePointsVisible") === "true";
+    }
+
+    function getCurrentPoints() {
+        return parseInt(
+            Qualtrics.SurveyEngine.getJSEmbeddedData("SurveyPoints"), 10
+        ) || 0;
+    }
+
+    function refreshPointsText() {
+        const pointsText = document.getElementById("pointsText");
+        if (!pointsText || !arePointsVisible()) return;
+        pointsText.innerText = "You currently have " + getCurrentPoints() + " points!";
+    }
+
+    // Public API used by points containers and question-awarding scripts.
+    // ONLY on the introduction page: updatePointsDisplay(true).
+    window.updatePointsDisplay = function (showWelcome = false) {
+        const pointsContainer = document.getElementById("pointsContainer");
+        const pointsText = document.getElementById("pointsText");
+        const droppy = document.getElementById("droppy");
+
+        if (!arePointsVisible()) {
+            if (pointsContainer) pointsContainer.style.display = "none";
+            return;
+        }
+        if (pointsContainer) pointsContainer.style.display = "";
+        if (!pointsText) return;
+
+        if (showWelcome && !welcomeShownOnPage && getCurrentPoints() === 0) {
+            welcomeShownOnPage = true;
+            welcomeActive = true;
+            pointsText.innerText = "Welcome to the survey!";
+            setTimeout(function () {
+                welcomeActive = false;
+                // Do not overwrite a different survey page after navigation.
+                if (document.getElementById("pointsText") === pointsText) {
+                    refreshPointsText(); // Read CURRENT total when timer fires.
+                }
+            }, WELCOME_DURATION);
+        } else if (!welcomeActive) {
+            refreshPointsText();
+        }
+
+        if (droppy) {
+            droppy.style.animation = "none";
+            void droppy.offsetWidth;
+            droppy.style.animation = "droppyDance 3s"; // CUSTOMIZE CSS keyframe name.
+        }
+    };
+
+    window.showPlusPoints = function (amt) {
+        const container = document.getElementById("plusPointsContainer");
+        if (!arePointsVisible()) {
+            if (container) container.style.display = "none";
+            return;
+        }
+        window.normalPointsDisplay(amt);
+    };
+
+    window.normalPointsDisplay = function (amt) {
+        const plusPoints = document.getElementById("plusPoints");
+        const container = document.getElementById("plusPointsContainer");
+        if (!plusPoints || !container) return;
+
+        if (pointsDisappearTimer !== null) clearTimeout(pointsDisappearTimer);
+        if (pointsHideTimer !== null) clearTimeout(pointsHideTimer);
+
+        container.style.animation = "none";
+        void container.offsetWidth;
+        container.style.display = "block";
+        container.style.top = "100px"; // CUSTOMIZE: position of floating +points animation.
+        plusPoints.innerText = "+" + amt;
+        container.style.animation = "pointsAppear 2s"; // CUSTOMIZE: CSS keyframe name.
+
+        pointsDisappearTimer = setTimeout(function () {
+            container.style.animation = "pointsDisappear 2s";
+            pointsDisappearTimer = null;
+        }, POINTS_ANIMATION_DURATION - 2000);
+
+        pointsHideTimer = setTimeout(function () {
+            container.style.display = "none";
+            container.style.animation = "none";
+            pointsHideTimer = null;
+        }, POINTS_ANIMATION_DURATION);
+    };
+})();
+</script>
+
+<!-- SHARED SCORING ENGINE: install this ONCE, after the display header above. -->
+<script>
+(function () {
+    "use strict";
+    const survey = Qualtrics.SurveyEngine;
+
+    function integerOr(value, fallback) {
+        const parsed = parseInt(value, 10);
+        return Number.isFinite(parsed) ? parsed : fallback;
+    }
+
+    function readNumber(fieldName, fallback = 0) {
+        return integerOr(survey.getJSEmbeddedData(fieldName), fallback);
+    }
+
+    /**
+     * Award points and count one qualifying interaction, at most once per flag.
+     *
+     * CUSTOMIZE PER QUESTION:
+     *   flag: unique, DECLARED JS Embedded Data flag (e.g. "Q_myQuestion").
+     *   field: points setting stored in Survey Flow (e.g. "MultipleChoicePoints").
+     *   OR amount: explicit integer (e.g. amount: 3).
+     *
+     * REQUIRED SURVEY FLOW FIELDS (see README):
+     * __js_SurveyPoints, __js_InteractionScore and __js_<flag>.
+     * The __js_ prefix is omitted when calling the JS API.
+     *
+     * Returns true only when this invocation successfully passed the flag check.
+     * A completed survey page does NOT need to be submitted to trigger the award;
+     * this is client-side behavior and should be validated against saved responses.
+     */
+    function awardOnce(options) {
+        options = options || {};
+        const flag = options.flag;
+        if (typeof flag !== "string" || !flag.trim()) {
+            console.error("DroppyPoints: awardOnce requires a unique flag string.");
+            return false;
+        }
+
+        if (survey.getJSEmbeddedData(flag) === "true") return false;
+
+        const amount = Object.prototype.hasOwnProperty.call(options, "amount")
+            ? integerOr(options.amount, 0)
+            : readNumber(options.field || "MultipleChoicePoints", options.fallback || 0);
+
+        // Prevent multiple callbacks from processing this same award on this page.
+        // Each flag MUST be declared in Survey Flow for cross-page persistence.
+        survey.setJSEmbeddedData(flag, "true");
+        survey.setJSEmbeddedData("SurveyPoints", readNumber("SurveyPoints") + amount);
+        survey.setJSEmbeddedData("InteractionScore", readNumber("InteractionScore") + 1);
+
+        if (typeof window.updatePointsDisplay === "function") {
+            window.updatePointsDisplay();
+        }
+        if (typeof window.showPlusPoints === "function") {
+            window.showPlusPoints(amount);
+        }
+        return true;
+    }
+
+    /** Initialize a page's ONE points container. */
+    function initializeCounter(welcome = false) {
+        const container = document.getElementById("pointsContainer");
+        if (container && survey.getJSEmbeddedData("arePointsVisible") !== "true") {
+            container.style.display = "none";
+            return;
+        }
+        if (typeof window.updatePointsDisplay === "function") {
+            window.updatePointsDisplay(Boolean(welcome));
+        }
+    }
+
+    window.DroppyPoints = Object.freeze({
+        awardOnce: awardOnce,
+        readNumber: readNumber,
+        initializeCounter: initializeCounter
+    });
+})();
+</script>
